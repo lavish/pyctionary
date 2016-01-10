@@ -54,6 +54,7 @@ class Game:
         # actual window size
         self.y = curses.LINES-1
         self.x = curses.COLS-1
+
         # subwindows
         self.header = None
         self.board = None
@@ -272,8 +273,11 @@ class Game:
                 if elapsed > self.timeout:
                     self.next_state = 'pre_check'
                     # interface
-                    subprocess.Popen(['mplayer', 'data/alarm.mp3'], stdout=subprocess.PIPE,
-                        stderr=subprocess.PIPE)
+                    try:
+                        subprocess.Popen(['aplay', 'data/alarm.wav'], stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE)
+                    except:
+                        pass
                     self.footer.clear()
                     self.footer.addstr(1, 1, self.text_timeout, curses.A_BOLD)                    
                 elif Game.interrupted:
@@ -405,7 +409,7 @@ def signal_handler(signal, frame):
 def parse_arguments():
     parser = argparse.ArgumentParser(description=u'Pyctionary, a word game for geeks')
     parser.add_argument('--teams', type=int, default=2, help='Number of teams (must be between 2-4, default is 2)')
-    parser.add_argument('--cards', type=str, default='cards.csv', help='Path to a card file (must be in csv format, default to cards.csv)')
+    parser.add_argument('--cards', type=str, default='cards/it.csv', help='Path to a card file (must be in csv format, default to cards/it.csv)')
     args = parser.parse_args()
 
     return args
