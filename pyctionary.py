@@ -27,7 +27,7 @@ class Game:
     text_header = u'Pyctionary, a word game for geeks. Press ESC to quit.'
     text_countdown = u'Time left (Ctrl-C to interrupt): '
     text_timeout = u'Time is up!'
-    text_dice = u'Roll the dice (1-6): '
+    text_dice = u'Roll the dice (1-6 or 0 to randomly advance): '
     text_draw = u'Press ENTER to start drawing'
     text_draw_all = u'ALL PLAY! Press ENTER to start drawing'
     text_success_or_fail = u'(S)uccess or (F)ail? '
@@ -351,7 +351,21 @@ class Game:
             elif self.state == 'rolled':
                 # game
                 if key in [ord(str(x)) for x in range(7)]:
-                    result = int(chr(key))
+                    if chr(key) == '0':
+                        t = time.time()
+                        tout = random.randint(2,7)
+                        result = 1
+                        while (time.time()-t) < tout:
+                            result = random.randint(1, 6)
+                            self.footer.addch(1, len(self.text_dice) + 1, str(result))
+                            self.footer.refresh()
+                            time.sleep(0.1)
+                    else:
+                        result = int(chr(key))
+                        self.footer.addch(1, len(self.text_dice) + 1, str(result))
+                    self.footer.refresh()
+                    time.sleep(1)
+
                     new_position = min(self.positions[self.active_team] + result, len(self.board_str)-1)
                     # interface
                     self.footer.erase()
@@ -401,7 +415,7 @@ def die(msg):
     sys.stderr.flush()
     sys.exit(1)
 
-def start_game(stdscr, categories, cards, num_teams):
+def start_game(stdscr, categories, cards, num_teams,):
     game = Game(stdscr, categories, cards, num_teams)
     signal.signal(signal.SIGINT, signal_handler)
     game.loop()
@@ -417,7 +431,7 @@ def main():
     try:
         curses.wrapper(start_game, categories, cards, args.teams)
     except ScreenTooSmall:
-        die(u'Minumum term size 104x32, aborting.\n')
+        die(u'Minimum term size 104x32, aborting.\n')
 
 if __name__ == '__main__':
     main()
