@@ -9,6 +9,11 @@ import signal
 import argparse
 import subprocess
 
+from enum import Enum
+from copy import deepcopy as copy
+
+State = Enum('State', 'pick watch draw countdown check roll')
+
 class ScreenTooSmall(Exception):
     pass
 
@@ -24,7 +29,7 @@ class Game:
     interrupted = False
 
     # all possible game strings
-    text_header = u'Pyctionary, a word game for geeks. Press ESC to quit.'
+    text_header = u'Pyctionary, a word game for geeks. ESC to quit, \'<\' to undo'
     text_countdown = u'Time left (Ctrl-C to interrupt): '
     text_timeout = u'Time is up!'
     text_dice = u'Roll the dice (1-6 or 0 to randomly advance): '
@@ -43,6 +48,10 @@ class Game:
         self.categories = categories
         self.cards = cards
         self.num_teams = num_teams
+
+        self.states = []
+        self.state_idx = -1
+
         self.teams = []
         self.active_team = 0
         self.positions = []
@@ -209,8 +218,25 @@ class Game:
         if self.x < 104 or self.y < 32:
             raise ScreenTooSmall()
 
+    def get_state(self):
+        return [
+            self.active_team,
+            copy(self.positions),
+            copy(self.card_data),
+            self.all_play,
+            self.state,
+        ]
+
+    def load_state(self, active_team, positions, card_data, all_play, state):
+        self.active_team = active_team
+        self.positions = positions
+        self.card_data = card_data
+        self.all_play = all_play
+        self.state = state
+
     def loop(self):
-        self.state = 'pick'
+        self.state = State.pick
+        self.state_prev = ''
         self.next_state = self.state
         key = 0
 
@@ -219,59 +245,74 @@ class Game:
         self.team_setup()
         self.draw_interface()
 
-        while True:
+        while True: 
             # ESC to quit
             if key == 27:
                 break
             # resize window
-            if key == curses.KEY_RESIZE:
+            elif key == curses.KEY_RESIZE:
                 # clear the screen to avoid artifacts
                 self.stdscr.erase()
                 # update screen size
                 self.check_size()
                 self.draw_interface()
+            elif key == ord('<'):
+                if len(self.states) > 0:
+                    if self.state in [State.check, State.roll] \
+                    or self.state == State.pick and len(self.states) > 1:
+                        del self.states[-1]
+                    self.load_state(*self.states[-1])
+                    self.next_state = self.state
+                    self.stdscr.erase()
+                    self.draw_interface()
+                    self.stdscr.refresh()
+            else:
+                if self.state_prev != self.state \
+                and self.state in [State.pick, State.check, State.roll]:
+                    self.states.append(self.get_state())
 
             # game automaton
-            if self.state == 'pick':
+            if self.state == State.pick:
                 # game
                 self.cell = self.board_str[self.positions[self.active_team]]
-                self.next_state = 'watch'
+                if key in [curses.KEY_ENTER, 10, 13]:
+                    self.pick_card()
+                    self.next_state = State.watch
+                    curses.ungetch(128)
                 # interface
                 self.blank_card()
                 self.card.refresh()
                 self.footer.clear()
                 self.footer.addstr(1, 1, self.text_pick_card)
-            elif self.state == 'watch':
-                if key == curses.KEY_ENTER or key == 10 or key == 13:
-                    # game
-                    self.pick_card()
-                    self.next_state = 'draw'
-                    # interface (display card)
-                    self.update_card()
-                    self.footer.clear()
-                    if self.all_play:
-                        text = self.text_draw_all
-                    else:
-                        text = self.text_draw
-                    self.footer.addstr(1, 1, text)
-                    self.card.refresh()
-                    self.footer.refresh()
-            elif self.state == 'draw':
-                if key == curses.KEY_ENTER or key == 10 or key == 13:
-                    # game
-                    self.time_start = time.time()
+                self.footer.refresh()
+
+            elif self.state == State.watch:
+                # game
+                if key in [curses.KEY_ENTER, 10, 13]:
+                    self.next_state = State.draw
                     curses.ungetch(128)
-                    Game.interrupted = False
-                    self.next_state = 'countdown'
-                    # interface (blank card and add countdown text in the footer)
-                    self.blank_card()
-                    self.card.refresh()
-            elif self.state == 'countdown':
+                # interface (display card)
+                self.update_card()
+                self.card.refresh()
+                self.footer.clear()
+                self.footer.addstr(1, 1, self.text_draw_all if self.all_play else self.text_draw)
+                self.footer.refresh()
+
+            elif self.state == State.draw:
+                # game
+                self.time_start = time.time()
+                Game.interrupted = False
+                self.next_state = State.countdown
+                curses.ungetch(128)
+                # interface (blank card and add countdown text in the footer)
+                self.blank_card()
+                self.card.refresh()
+
+            elif self.state == State.countdown:
                 # game
                 elapsed = int(time.time() - self.time_start)
-                # interface
                 if elapsed > self.timeout:
-                    self.next_state = 'pre_check'
+                    self.next_state = State.check
                     # interface
                     try:
                         subprocess.Popen(['aplay', 'data/alarm.wav'], stdout=subprocess.PIPE,
@@ -279,12 +320,15 @@ class Game:
                     except:
                         pass
                     self.footer.clear()
-                    self.footer.addstr(1, 1, self.text_timeout, curses.A_BOLD)                    
+                    self.footer.addstr(1, 1, self.text_timeout)
+                    self.footer.refresh()
+                    curses.napms(3000)
+                    curses.ungetch(128)
                 elif Game.interrupted:
-                    self.next_state = 'pre_check'
+                    self.next_state = State.check
+                    curses.ungetch(128)
                     # interface
                     self.footer.clear()
-                    curses.ungetch(128)
                 else:
                     try:
                         curses.ungetch(128)
@@ -295,64 +339,71 @@ class Game:
                     self.update_countdown(elapsed)
                 # interface
                 self.footer.refresh()
-            elif self.state == 'pre_check':
-                # game
-                self.next_state = 'check'
+
+            elif self.state == State.check:
                 # interface
+                self.update_card()
+                self.card.refresh()
                 self.footer.clear()
+
+                # game
                 if self.all_play:
+                    # interface
                     text = u'Winning team '
                     self.footer.addstr(1, 1, text)
                     needle = len(text)
                     text = u', '.join(u'({}){}'.format(team.color[0][0].upper(), team.color[0][1:]) for team in self.teams)
                     text += u', (N)one: '
                     self.footer.addstr(1, 1 + needle, text)
-                else:
-                    self.footer.addstr(1, 1, self.text_success_or_fail)
-                self.update_card()
-                self.card.refresh()
-                self.footer.refresh()
-            elif self.state == 'check':
-                # game
-                if self.all_play:
-                    # all play lasts at most 1 round
-                    self.all_play = False
+
                     team_str = u'bmgy'
                     if key in [ord('N'), ord('n')]:
                         self.active_team = (self.active_team + 1) % len(self.teams)
-                        self.next_state = 'pick'
+                        self.next_state = State.pick
+                        # all play lasts at most 1 round
+                        self.all_play = False
+                        curses.ungetch(128)
                         # interface
-                        self.footer.addch(chr(key))
+                        self.footer.addch(chr(key).upper())
+                        self.footer.refresh()
+                        curses.napms(2000)
                     elif key in [ord(x) for x in team_str + team_str.upper()]:
                         for team in self.teams:
                             if team.color[0][0].upper() == chr(key).upper():
                                 self.active_team = team.id
                                 break
-                        self.next_state = 'roll'
+                        self.next_state = State.roll
+                        # all play lasts at most 1 round
+                        self.all_play = False
+                        curses.ungetch(128)
                         # interface
-                        self.footer.addch(chr(key))
-                    else:
-                        pass
-                    self.footer.refresh()
+                        self.footer.addch(chr(key).upper())
+                        self.footer.refresh()
+                        curses.napms(2000)
                 else:
-                    if key in [ord(x) for x in 'sS']:
-                        self.next_state = 'roll'
+                    # interface
+                    self.footer.addstr(1, 1, self.text_success_or_fail)
+
+                    if key in [ord(x) for x in 'sSfF']:
+                        upper_key = chr(key).upper()
+                        if upper_key == 'S':
+                            self.next_state = State.roll
+                        else:
+                            self.active_team = (self.active_team + 1) % len(self.teams)
+                            self.next_state = State.pick    
+                        curses.ungetch(128)
                         # interface
-                        self.footer.addch(chr(key))
-                    elif key in [ord('f'), ord('F')]:
-                        self.active_team = (self.active_team + 1) % len(self.teams)
-                        self.next_state = 'pick'
-                        # interface
-                        self.footer.addch(chr(key))
+                        self.footer.addch(upper_key)
+                        self.footer.refresh()
+                        curses.napms(2000)
+
+            elif self.state == State.roll:
                 # interface
                 self.update_board()
                 self.board.refresh()
-                self.footer.refresh()
-            elif self.state == 'roll':
                 self.footer.clear()
                 self.footer.addstr(1, 1, self.text_dice)
-                self.next_state = 'rolled'
-            elif self.state == 'rolled':
+
                 # game
                 if key in [ord(str(x)) for x in range(7)]:
                     if chr(key) == '0':
@@ -363,12 +414,12 @@ class Game:
                             result = random.randint(1, 6)
                             self.footer.addch(1, len(self.text_dice) + 1, str(result))
                             self.footer.refresh()
-                            time.sleep(0.1)
+                            curses.napms(100)
                     else:
                         result = int(chr(key))
                         self.footer.addch(1, len(self.text_dice) + 1, str(result))
                     self.footer.refresh()
-                    time.sleep(1)
+                    curses.napms(1000)
 
                     new_position = min(self.positions[self.active_team] + result, len(self.board_str)-1)
                     # interface
@@ -384,15 +435,20 @@ class Game:
                         # interface
                         self.footer.addstr(1, 1, self.text_finish_line)
                     # game
-                    self.next_state = 'pick'
+                    self.next_state = State.pick
                     # interface
                     self.footer.refresh()
                     self.update_board()
                     self.board.refresh()
+                    curses.ungetch(128)
+                    curses.napms(2000)
+
 
             key = self.footer.getch()
+            self.state_prev = self.state
             self.state = self.next_state
-            time.sleep(0.01)
+
+            curses.napms(10)
 
 def load_cards(path):
     cards = []
