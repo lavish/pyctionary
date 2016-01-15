@@ -238,6 +238,8 @@ class Game:
         self.state = State.pick
         self.state_prev = ''
         self.next_state = self.state
+        # randomize acive team on startup
+        self.active_team = random.randint(0, len(self.teams))
         key = 0
 
         self.check_size()
