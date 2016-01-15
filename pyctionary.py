@@ -364,6 +364,8 @@ class Game:
                         self.all_play = False
                         curses.ungetch(128)
                         # interface
+                        self.update_board()
+                        self.board.refresh()
                         self.footer.addch(chr(key).upper())
                         self.footer.refresh()
                         curses.napms(2000)
