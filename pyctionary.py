@@ -46,6 +46,8 @@ class Game:
     text_pick_card = u'Press ENTER to pick a card'
     text_finish_line = u'Not going forward, finish line already reached'
     text_save_game = u'Save game? (Y/N) '
+    chr_active_marker = u'▶'
+    text_all_play_marker = u'◀▶'
     fmt_moving = u'Moving forward of {} positions'
 
     # sand timer, in seconds
@@ -159,7 +161,7 @@ class Game:
                 else:
                     attr = curses.color_pair(5)
                 if c.isupper():
-                    chars = u'╰╯'   
+                    chars = self.text_all_play_marker  
             # if (i+1) % 12 == 0:
             #     chars = u'||'
             self.board.addstr(1, 10+2*i, chars, attr)
@@ -167,9 +169,15 @@ class Game:
         # teams
         for team in self.teams:
             self.board.addstr(3+team.id, 10, (self.positions[team.id] + 1) * u'  ', team.color[1] | curses.A_REVERSE)
-            self.board.addstr(3+team.id, 1, u' {}'.format(team.color[0]), team.color[1])
+            #self.board.addstr(3+team.id, 1, u' {}'.format(team.color[0]), team.color[1])
+            base_text = u'{:^7s}'.format(team.color[0])
+            args = team.color[1]
             if self.active_team == team.id:
-                self.board.addstr(3+team.id, 1, u'*', team.color[1])
+                text = self.chr_active_marker + base_text
+                args |= curses.A_REVERSE
+            else:
+                text = u' ' + base_text
+            self.board.addstr(3+team.id, 1, text, args)
 
     def draw_card(self):
         tot_y = len(self.categories)*3+2
@@ -228,8 +236,11 @@ class Game:
 
     def check_size(self):
         if not self._big_enough():
-            self.save_game()
-            raise ScreenTooSmall(saved=True)
+            saved = False
+            if self.states:
+                self.save_game()
+                saved = True
+            raise ScreenTooSmall(saved)
 
     def _big_enough(self):
         self.y, self.x = self.stdscr.getmaxyx()
@@ -531,7 +542,7 @@ class Game:
                     curses.napms(2000)
 
             if self.all_play:
-                self.footer.addstr(1, self.x-10, u'ALL PLAY!', curses.A_BOLD) 
+                self.footer.addstr(1, self.x-10, u'ALL PLAY!') 
             else:
                 self.footer.addstr(1, self.x-10, u' '*9)
 
