@@ -6,15 +6,21 @@ import time
 import random
 import curses
 import signal
+import pickle
+import datetime
 import argparse
 import subprocess
 
 from enum import Enum
 from copy import deepcopy as copy
 
-State = Enum('State', 'pick watch draw countdown check roll')
+State = Enum('State', 'pick watch getready draw countdown check roll')
 
-class ScreenTooSmall(Exception):
+class GameTerminated(Exception):
+    def __init__(self, saved=False):
+        self.saved = saved
+
+class ScreenTooSmall(GameTerminated):
     pass
 
 class Team:
@@ -33,32 +39,36 @@ class Game:
     text_countdown = u'Time left (Ctrl-C to interrupt): '
     text_timeout = u'Time is up!'
     text_dice = u'Roll the dice (1-6 or 0 to randomly advance): '
+    text_hide_card = u'Press ENTER to hide the card'
+    text_getready = u'Get ready! Press ENTER to start drawing!'
     text_draw = u'Press ENTER to start drawing'
-    text_draw_all = u'ALL PLAY! Press ENTER to start drawing'
     text_success_or_fail = u'(S)uccess or (F)ail? '
     text_pick_card = u'Press ENTER to pick a card'
     text_finish_line = u'Not going forward, finish line already reached'
+    text_save_game = u'Save game? (Y/N) '
     fmt_moving = u'Moving forward of {} positions'
 
     # sand timer, in seconds
     timeout = 60
 
-    def __init__(self, stdscr, categories, cards, num_teams):
+    def __init__(self, stdscr, categories, cards, num_teams, restore_file):
         self.stdscr = stdscr
         self.categories = categories
         self.cards = cards
         self.num_teams = num_teams
+        self.restore_file = restore_file
 
         self.states = []
-        self.state_idx = -1
 
         self.teams = []
-        self.active_team = 0
+        # randomize active team on startup
+        self.active_team = random.randint(0, self.num_teams-1)
         self.positions = []
         self.card_data = []
         self.time_start = 0
         self.all_play = False
-        self.state = None
+        self.state = State.pick
+        self.cell = self.board_str[0]
 
         # actual window size
         self.y = curses.LINES-1
@@ -70,6 +80,10 @@ class Game:
         self.card = None
         self.legend = None
         self.footer = None
+
+        # setup
+        self.interface_setup()
+        self.team_setup()
 
     def team_setup(self):
         for i in range(self.num_teams):
@@ -145,10 +159,10 @@ class Game:
                 else:
                     attr = curses.color_pair(5)
                 if c.isupper():
-                    chars = u'■■'
+                    chars = u'╰╯'   
             # if (i+1) % 12 == 0:
             #     chars = u'||'
-            self.board.addstr(1, 10+2*i, chars, attr | curses.A_BOLD)
+            self.board.addstr(1, 10+2*i, chars, attr)
 
         # teams
         for team in self.teams:
@@ -171,7 +185,6 @@ class Game:
             args = self.category_colors[i][1]
             if self.category_colors[i][0].startswith(self.cell.lower()):
                 text = u'*** {} ***'.format(text)
-                args = args | curses.A_BOLD
             self.card.addstr(2+i*3, 1, u'{:^38s}'.format(text), args)
             self.card.addstr(3+i*3, 1, u' '*38, self.category_colors[i][1])
 
@@ -214,9 +227,15 @@ class Game:
             u' '*elapsed, curses.color_pair(11))
 
     def check_size(self):
+        if not self._big_enough():
+            self.save_game()
+            raise ScreenTooSmall(saved=True)
+
+    def _big_enough(self):
         self.y, self.x = self.stdscr.getmaxyx()
         if self.x < 104 or self.y < 32:
-            raise ScreenTooSmall()
+            return False
+        return True
 
     def get_state(self):
         return [
@@ -234,30 +253,79 @@ class Game:
         self.all_play = all_play
         self.state = state
 
+    def save_game(self):
+        obj = {
+            'categories': self.categories,
+            'cards': self.cards,
+            'num_teams': self.num_teams,
+            'states': self.states,
+            'teams': self.teams,
+            'active_team': self.active_team,
+            'positions': self.positions,
+            'card_data': self.card_data,
+            'time_start': self.time_start,
+            'all_play': self.all_play,
+            'state': self.state,
+            'cell': self.cell}
+        with open(self.restore_file, 'wb') as f:
+            pickle.dump(obj, f, pickle.HIGHEST_PROTOCOL)
+
+    def restore_game(self, fname=False):
+        restore_file = fname if fname else self.restore_file
+        with open(restore_file, 'rb') as f:
+            game = pickle.load(f)
+        self.categories = game['categories']
+        self.cards = game['cards']
+        self.num_teams = game['num_teams']
+        self.states = game['states']
+        self.teams = game['teams']
+        self.active_team = game['active_team']
+        self.positions = game['positions']
+        self.card_data = game['card_data']
+        self.time_start = game['time_start']
+        self.all_play = game['all_play']
+        self.state = game['state']
+        self.cell = game['cell']
+
     def loop(self):
-        self.state = State.pick
         self.state_prev = ''
         self.next_state = self.state
-        # randomize acive team on startup
-        self.active_team = random.randint(0, self.num_teams-1)
+        self.all_play_prev = False
+
         key = 0
 
         self.check_size()
-        self.interface_setup()
-        self.team_setup()
         self.draw_interface()
 
         while True: 
             # ESC to quit
             if key == 27:
-                break
+                self.footer.clear()
+                self.footer.addstr(1,1, self.text_save_game)
+                self.footer.refresh()
+                while True:
+                    key = self.footer.getch()
+                    if key in [ord(x) for x in 'yYnN']:
+                        break
+                if chr(key).upper() == 'Y':
+                    self.save_game()
+                    raise GameTerminated(saved=True)
+                else:
+                    raise GameTerminated(saved=False)
+
             # resize window
             elif key == curses.KEY_RESIZE:
                 # clear the screen to avoid artifacts
                 self.stdscr.erase()
                 # update screen size
-                self.check_size()
-                self.draw_interface()
+                if not self._big_enough():
+                    self.stdscr.erase()
+                    self.stdscr.addstr(1, 1, u'Screen too small!')
+                    self.stdscr.refresh()
+                    key = self.stdscr.getch()
+                    continue
+                else:
+                    self.draw_interface()
             elif key == ord('<'):
                 if len(self.states) > 0:
                     if self.state in [State.check, State.roll] \
@@ -272,6 +340,11 @@ class Game:
                 if self.state_prev != self.state \
                 and self.state in [State.pick, State.check, State.roll]:
                     self.states.append(self.get_state())
+
+            if self.all_play:
+                self.footer.bkgd(u' ', curses.color_pair(1))
+            else:
+                self.footer.bkgd(u' ', curses.color_pair(6))
 
             # game automaton
             if self.state == State.pick:
@@ -291,14 +364,25 @@ class Game:
             elif self.state == State.watch:
                 # game
                 if key in [curses.KEY_ENTER, 10, 13]:
-                    self.next_state = State.draw
+                    self.next_state = State.getready
                     curses.ungetch(128)
                 # interface (display card)
                 self.update_card()
                 self.card.refresh()
                 self.footer.clear()
-                self.footer.addstr(1, 1, self.text_draw_all if self.all_play else self.text_draw)
+                self.footer.addstr(1, 1, self.text_hide_card)
                 self.footer.refresh()
+
+            elif self.state == State.getready:
+                if key in [curses.KEY_ENTER, 10, 13]:
+                    self.next_state = State.draw
+                    curses.ungetch(128)
+                # interface (blank card and add countdown text in the footer)
+                self.blank_card()
+                self.card.refresh()
+                self.footer.clear()
+                self.footer.addstr(1, 1, self.text_getready)
+                self.footer.refresh()                
 
             elif self.state == State.draw:
                 # game
@@ -306,9 +390,6 @@ class Game:
                 Game.interrupted = False
                 self.next_state = State.countdown
                 curses.ungetch(128)
-                # interface (blank card and add countdown text in the footer)
-                self.blank_card()
-                self.card.refresh()
 
             elif self.state == State.countdown:
                 # game
@@ -360,7 +441,7 @@ class Game:
 
                     team_str = u'bmgy'
                     if key in [ord('N'), ord('n')]:
-                        self.active_team = (self.active_team + 1) % len(self.teams)
+                        self.active_team = (self.active_team + 1) % self.num_teams
                         self.next_state = State.pick
                         # all play lasts at most 1 round
                         self.all_play = False
@@ -393,10 +474,12 @@ class Game:
                         if upper_key == 'S':
                             self.next_state = State.roll
                         else:
-                            self.active_team = (self.active_team + 1) % len(self.teams)
+                            self.active_team = (self.active_team + 1) % self.num_teams
                             self.next_state = State.pick    
                         curses.ungetch(128)
                         # interface
+                        self.update_board()
+                        self.board.refresh()
                         self.footer.addch(upper_key)
                         self.footer.refresh()
                         curses.napms(2000)
@@ -447,10 +530,16 @@ class Game:
                     curses.ungetch(128)
                     curses.napms(2000)
 
+            if self.all_play:
+                self.footer.addstr(1, self.x-10, u'ALL PLAY!', curses.A_BOLD) 
+            else:
+                self.footer.addstr(1, self.x-10, u' '*9)
+
 
             key = self.footer.getch()
             self.state_prev = self.state
             self.state = self.next_state
+            self.all_play_prev = self.all_play
 
             curses.napms(10)
 
@@ -470,6 +559,7 @@ def parse_arguments():
     parser = argparse.ArgumentParser(description=u'Pyctionary, a word game for geeks')
     parser.add_argument('--teams', type=int, default=2, help='Number of teams (must be between 2-4, default is 2)')
     parser.add_argument('--cards', type=str, default='cards/it.csv', help='Path to a card file (must be in csv format, default to cards/it.csv)')
+    parser.add_argument('--restore', type=str, help='Restore a previous game state')
     args = parser.parse_args()
 
     return args
@@ -479,23 +569,39 @@ def die(msg):
     sys.stderr.flush()
     sys.exit(1)
 
-def start_game(stdscr, categories, cards, num_teams,):
-    game = Game(stdscr, categories, cards, num_teams)
+def start_game(stdscr, categories, cards, num_teams, restore, restore_file):
+    game = Game(stdscr, categories, cards, num_teams, restore_file)
+    if restore:
+        game.restore_game(restore)
     signal.signal(signal.SIGINT, signal_handler)
     game.loop()
 
 def main():
     args = parse_arguments()
+
     if args.teams > 4 or args.teams < 2:
         die(u'Number of teams must be between 2 and 4.\n')
+
+    restore_file = '/tmp/pyctionary_{}.pickle'.format(
+        datetime.datetime.now().strftime('%Y%m%d-%H%M%S'))
 
     cards = load_cards(args.cards)
     categories = cards[0]
     cards = cards[1:]
+
     try:
-        curses.wrapper(start_game, categories, cards, args.teams)
-    except ScreenTooSmall:
+        curses.wrapper(start_game, categories, cards, args.teams, 
+            args.restore, restore_file)
+    except ScreenTooSmall as e:
+        if e.saved:
+            sys.stderr.write(u'Game saved as {}\n'.format(restore_file))
         die(u'Minimum term size 104x32, aborting.\n')
+    except GameTerminated as e:
+        if e.saved:
+            sys.stderr.write(u'Game saved as {}\n'.format(restore_file))
+    except pickle.UnpicklingError:
+        sys.stderr.write(u'Malformed restore file provided, aborting\n')
+
 
 if __name__ == '__main__':
     main()

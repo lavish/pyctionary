@@ -6,7 +6,7 @@ Pyctionary is a ncurses-based clone of the [Pictionary](https://en.wikipedia.org
 
 Demo
 ----
-[![asciicast](https://asciinema.org/a/9q9r71rndhr7fwpm1ojif6ihu.png)](https://asciinema.org/a/9q9r71rndhr7fwpm1ojif6ihu)
+[![asciicast](https://asciinema.org/a/8qcxl9y5baf2hnmblng9mdsmx.png)](https://asciinema.org/a/8qcxl9y5baf2hnmblng9mdsmx)
 
 Author
 ------
